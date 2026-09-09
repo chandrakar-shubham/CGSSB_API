@@ -1,6 +1,7 @@
 from datetime import datetime
 from enum import Enum
-from pydantic import BaseModel, Field, HttpUrl
+
+from pydantic import BaseModel, Field
 
 
 class Category(str, Enum):
@@ -28,6 +29,13 @@ class ScrapeJob(BaseModel):
     created_at: datetime
     source: Source
     category: Category
+    discovered: int = 0
+    new_items: int = 0
+    updated_items: int = 0
+    unchanged_items: int = 0
+    failed: int = 0
+    finished_at: datetime | None = None
+    error: str | None = None
 
 
 class ScrapedItem(BaseModel):
