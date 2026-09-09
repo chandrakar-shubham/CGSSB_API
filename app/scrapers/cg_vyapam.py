@@ -53,6 +53,8 @@ LISTING_CATEGORY_MARKERS = (
     (Category.result, ("result", "परिणाम")),
 )
 
+EXCLUDED_POST_IDS = {"RESULT", "CONTACT", "PSC", "DAVA"}
+
 
 class CGVyapamScraper:
     def __init__(self) -> None:
@@ -103,6 +105,13 @@ class CGVyapamScraper:
         return fallback
 
     def parse_listing(self, html: str, config: SourceConfig) -> list[ScrapedItem]:
+        """Extract PostID announcements from category pages or the homepage fallback.
+
+        The live CG Vyapam tag URLs may return the site's homepage HTML. In that
+        case the marquee still exposes the current PostID links. Each link is
+        classified from its announcement text so mixed homepage announcements
+        do not leak into the requested category.
+        """
         soup = BeautifulSoup(html, "lxml")
         items: list[ScrapedItem] = []
         seen: set[str] = set()
@@ -110,21 +119,32 @@ class CGVyapamScraper:
             href = self._clean(anchor.get("href"))
             url = urljoin(BASE, href)
             post_id = self._post_id(url)
-            if not post_id or post_id.upper() in {"RESULT", "CONTACT", "PSC", "DAVA"}:
+            if not post_id or post_id.upper() in EXCLUDED_POST_IDS:
                 continue
             title = self._clean(anchor.get_text(" ", strip=True))
             if not title:
                 continue
             item_category = self._infer_category(title, config.category)
+            # When a category endpoint returns the homepage, only keep links
+            # whose announcement explicitly belongs to that category.
+            if config.category != Category.all and item_category != config.category:
+                continue
             key = f"{item_category.value}|{post_id.upper()}"
             if key in seen:
                 continue
             seen.add(key)
             fingerprint = self._fingerprint(item_category, post_id, url)
             items.append(ScrapedItem(
-                id=f"cgv_{fingerprint}", source="cg_vyapam", category=item_category.value,
-                title=title, source_url=url,
-                raw={"post_id": post_id, "discovered_from": config.url, "inferred_category": item_category.value},
+                id=f"cgv_{fingerprint}",
+                source="cg_vyapam",
+                category=item_category.value,
+                title=title,
+                source_url=url,
+                raw={
+                    "post_id": post_id,
+                    "discovered_from": config.url,
+                    "inferred_category": item_category.value,
+                },
             ))
         return items
 
@@ -140,7 +160,14 @@ class CGVyapamScraper:
                 return key
         return None
 
-    def parse_detail(self, html: str, url: str, config: SourceConfig, fallback_title: str = "", item_category: Category | None = None) -> ScrapedItem:
+    def parse_detail(
+        self,
+        html: str,
+        url: str,
+        config: SourceConfig,
+        fallback_title: str = "",
+        item_category: Category | None = None,
+    ) -> ScrapedItem:
         soup = BeautifulSoup(html, "lxml")
         post_id = self._post_id(url) or ""
         category = item_category or self._infer_category(fallback_title, config.category)
@@ -191,9 +218,15 @@ class CGVyapamScraper:
             "resource_count": sum(len(v) for v in resources.values()),
         }
         return ScrapedItem(
-            id=f"cgv_{fingerprint}", source="cg_vyapam", category=category.value,
-            title=title, source_url=url, notification_url=notification_url,
-            application_url=application_url, content=text or None, raw=raw,
+            id=f"cgv_{fingerprint}",
+            source="cg_vyapam",
+            category=category.value,
+            title=title,
+            source_url=url,
+            notification_url=notification_url,
+            application_url=application_url,
+            content=text or None,
+            raw=raw,
         )
 
     def parse(self, html: str, config: SourceConfig) -> list[ScrapedItem]:
@@ -209,8 +242,11 @@ class CGVyapamScraper:
             if selected == Category.result and not discovered:
                 discovered = [ScrapedItem(
                     id=f"cgv_{self._fingerprint(selected, 'RESULT', config.url)}",
-                    source="cg_vyapam", category=selected.value, title="CG Vyapam Result",
-                    source_url=config.url, raw={"post_id": "RESULT"},
+                    source="cg_vyapam",
+                    category=selected.value,
+                    title="CG Vyapam Result",
+                    source_url=config.url,
+                    raw={"post_id": "RESULT"},
                 )]
             for discovered_item in discovered:
                 if not discovered_item.source_url:
