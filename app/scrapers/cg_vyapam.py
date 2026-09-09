@@ -46,6 +46,13 @@ RESOURCE_LABELS = {
     "online_application": ("online application form", "online application", "ऑनलाइन आवेदन"),
 }
 
+LISTING_CATEGORY_MARKERS = (
+    (Category.online_application, ("online application", "onlineapplication", "ऑनलाइन आवेदन")),
+    (Category.admit_card, ("admit card", "प्रवेश पत्र")),
+    (Category.model_answer, ("model answer", "model answers", "मॉडल उत्तर")),
+    (Category.result, ("result", "परिणाम")),
+)
+
 
 class CGVyapamScraper:
     def __init__(self) -> None:
@@ -87,6 +94,14 @@ class CGVyapamScraper:
         value = f"{category.value}|{post_id}|{url}".encode("utf-8")
         return hashlib.sha256(value).hexdigest()[:24]
 
+    @classmethod
+    def _infer_category(cls, title: str, fallback: Category) -> Category:
+        normalized = re.sub(r"\s+", " ", title.casefold()).strip()
+        for category, markers in LISTING_CATEGORY_MARKERS:
+            if any(marker.casefold() in normalized for marker in markers):
+                return category
+        return fallback
+
     def parse_listing(self, html: str, config: SourceConfig) -> list[ScrapedItem]:
         soup = BeautifulSoup(html, "lxml")
         items: list[ScrapedItem] = []
@@ -100,15 +115,16 @@ class CGVyapamScraper:
             title = self._clean(anchor.get_text(" ", strip=True))
             if not title:
                 continue
-            key = f"{config.category.value}|{post_id.upper()}"
+            item_category = self._infer_category(title, config.category)
+            key = f"{item_category.value}|{post_id.upper()}"
             if key in seen:
                 continue
             seen.add(key)
-            fingerprint = self._fingerprint(config.category, post_id, url)
+            fingerprint = self._fingerprint(item_category, post_id, url)
             items.append(ScrapedItem(
-                id=f"cgv_{fingerprint}", source="cg_vyapam", category=config.category.value,
+                id=f"cgv_{fingerprint}", source="cg_vyapam", category=item_category.value,
                 title=title, source_url=url,
-                raw={"post_id": post_id, "discovered_from": config.url},
+                raw={"post_id": post_id, "discovered_from": config.url, "inferred_category": item_category.value},
             ))
         return items
 
@@ -124,9 +140,10 @@ class CGVyapamScraper:
                 return key
         return None
 
-    def parse_detail(self, html: str, url: str, config: SourceConfig, fallback_title: str = "") -> ScrapedItem:
+    def parse_detail(self, html: str, url: str, config: SourceConfig, fallback_title: str = "", item_category: Category | None = None) -> ScrapedItem:
         soup = BeautifulSoup(html, "lxml")
         post_id = self._post_id(url) or ""
+        category = item_category or self._infer_category(fallback_title, config.category)
         article = soup.select_one("main article") or soup.select_one("article") or soup.body or soup
         for noisy in article.select("nav, header, footer, aside, script, style, noscript"):
             noisy.decompose()
@@ -143,6 +160,7 @@ class CGVyapamScraper:
             page_title = soup.title.get_text(" ", strip=True) if soup.title else ""
             title = self._clean(page_title)
 
+        category = self._infer_category(title, category)
         resources: dict[str, list[str]] = {}
         notification_url: str | None = None
         application_url: str | None = None
@@ -166,14 +184,14 @@ class CGVyapamScraper:
         for key, values in list(resources.items()):
             resources[key] = list(dict.fromkeys(values))
         text = self._clean(article.get_text(" ", strip=True))
-        fingerprint = self._fingerprint(config.category, post_id or title, url)
+        fingerprint = self._fingerprint(category, post_id or title, url)
         raw = {
             "post_id": post_id or None,
             "resources": resources,
             "resource_count": sum(len(v) for v in resources.values()),
         }
         return ScrapedItem(
-            id=f"cgv_{fingerprint}", source="cg_vyapam", category=config.category.value,
+            id=f"cgv_{fingerprint}", source="cg_vyapam", category=category.value,
             title=title, source_url=url, notification_url=notification_url,
             application_url=application_url, content=text or None, raw=raw,
         )
@@ -199,7 +217,13 @@ class CGVyapamScraper:
                     continue
                 try:
                     detail_html = self.fetch(discovered_item.source_url)
-                    item = self.parse_detail(detail_html, discovered_item.source_url, config, fallback_title=discovered_item.title)
+                    item = self.parse_detail(
+                        detail_html,
+                        discovered_item.source_url,
+                        config,
+                        fallback_title=discovered_item.title,
+                        item_category=Category(discovered_item.category),
+                    )
                 except Exception:
                     item = discovered_item
                 if keyword:
